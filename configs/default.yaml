@@ -1,0 +1,55 @@
+paths:
+  ref_region_sets: ref/region_sets
+
+llm:
+  enable: false
+  provider: local_llama_cpp
+  model_path: ""
+
+ingest:
+  retries: 0
+
+manifest:
+  compute_sha: false
+  genome_build: hg38
+  retries: 0
+
+schema:
+  prefer_columns: [0,1,2]
+  retries: 0
+
+qc:
+  bin_size: 1000000
+  chromosomes: ["chr1","chr2","chr3","chr4","chr5","chr6","chr7","chr8","chr9","chr10","chr11","chr12","chr13","chr14","chr15","chr16","chr17","chr18","chr19","chr20","chr21","chr22","chrX","chrY","chrM"]
+  advanced_plots: false
+  qc_bin_heatmap: false
+  max_samples: 20
+  max_bins: 200
+  retries: 0
+
+cnv:
+  bin_size: 1000000
+  advanced_plots: false
+  cnv_chrom_plot: false
+  retries: 0
+
+frag:
+  advanced_plots: false
+  frag_violin: false
+  max_samples: 20
+  retries: 0
+
+meth_proxy:
+  retries: 0
+
+merge:
+  retries: 0
+
+cohort:
+  retries: 0
+
+report:
+  retries: 0
+
+agent_review:
+  retries: 0

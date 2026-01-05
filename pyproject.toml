@@ -1,0 +1,31 @@
+[project]
+name = "liquidbiopsy-agent"
+version = "0.1.0"
+description = "Agentised cfDNA BED-based analysis pipeline"
+authors = [{name = "Codex"}]
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.1",
+    "pyarrow>=14",
+    "numpy>=1.26",
+    "tqdm>=4.66",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "jinja2>=3.1",
+    "pyyaml>=6.0",
+    "tenacity>=8.2",
+    "langgraph>=0.0.40",
+    "pyranges>=0.0.129"
+]
+
+[project.optional-dependencies]
+report = ["weasyprint>=59"]
+ml = ["scikit-learn>=1.3"]
+local-llm = ["llama-cpp-python>=0.2.0"]
+
+[project.scripts]
+liquidbiopsy-agent = "liquidbiopsy_agent.cli:main"
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
