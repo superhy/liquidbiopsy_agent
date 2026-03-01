@@ -4,12 +4,15 @@ import json
 import os
 from typing import Any, Dict, Optional
 
+from liquidbiopsy_agent.utils.storage import resolve_data_path
+
 
 class LLMClient:
     def __init__(self, provider: Optional[str] = None, model: Optional[str] = None, model_path: Optional[str] = None) -> None:
         self.provider = provider or os.getenv("LIQUIDBIOPSY_LLM_PROVIDER", "local_llama_cpp")
         self.model = model or os.getenv("LIQUIDBIOPSY_LLM_MODEL", "")
-        self.model_path = model_path or os.getenv("LIQUIDBIOPSY_LLM_MODEL_PATH", "")
+        raw_model_path = model_path or os.getenv("LIQUIDBIOPSY_LLM_MODEL_PATH", "")
+        self.model_path = str(resolve_data_path(raw_model_path, path_kind="LLM model path", must_exist=False)) if raw_model_path else ""
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.enabled = False
         self._llama = None

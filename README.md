@@ -9,14 +9,23 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+## Data Root Policy
+This repository is code-only. Do not store datasets or model checkpoints in git.
+All dataset/checkpoint/output paths are resolved under one server root:
+- default root: `/liquid-biopsy-data`
+- override root: set `LIQUID_BIOPSY_DATA_ROOT=/your/fixed/server/path/liquid-biopsy-data`
+
+Any runtime data or weight path must be inside that root.
+
 ## Quickstart
 ```bash
-python -m liquidbiopsy_agent run --input /path/to/bed_dir --output output --config configs/default.yaml
-python -m liquidbiopsy_agent run --input /path/to/bed_dir --output output --instruction "开启所有图"
-python -m liquidbiopsy_agent status --run-dir output/run_YYYYMMDD_HHMMSS
-python -m liquidbiopsy_agent resume --run-dir output/run_YYYYMMDD_HHMMSS --instruction "no cnv"
+export LIQUID_BIOPSY_DATA_ROOT=/liquid-biopsy-data
+python -m liquidbiopsy_agent run --input datasets/bed/my_cohort --output runs/bed_mvp --config configs/default.yaml
+python -m liquidbiopsy_agent run --input datasets/bed/my_cohort --output runs/bed_mvp --instruction "开启所有图"
+python -m liquidbiopsy_agent status --run-dir runs/bed_mvp/run_YYYYMMDD_HHMMSS
+python -m liquidbiopsy_agent resume --run-dir runs/bed_mvp/run_YYYYMMDD_HHMMSS --instruction "no cnv"
 ```
-Supports tar bundles too: `--input GSE243474_RAW.tar`.
+Supports tar bundles too: `--input datasets/tar/GSE243474_RAW.tar`.
 
 ## Inputs
 - BED or BED.GZ fragment coordinates (3+ columns); FASTQ/BAM not required.
@@ -48,7 +57,7 @@ Example (llama.cpp local model):
 ```bash
 pip install -e ".[local-llm]"
 export LIQUIDBIOPSY_LLM_PROVIDER=local_llama_cpp
-export LIQUIDBIOPSY_LLM_MODEL_PATH=/path/to/your/model.gguf
+export LIQUIDBIOPSY_LLM_MODEL_PATH=weights/llm/your_model.gguf
 ```
 
 ## Agent interpretation outputs
@@ -57,6 +66,36 @@ The agent writes intermediate, interpretable outputs to:
 - `analysis/agent/rerun_plan.json`
 - `analysis/agent/explanation.txt`
 These are intended to support biomedical review and parameter refinement between runs.
+
+## New module: tissue + blood multimodal contrastive learning (HER2 example)
+This repository now includes an independent module at `src/liquidbiopsy_agent/multimodal/` for learning cross-modal alignment between:
+- Tissue pathology images (image foundation backbone; e.g. ResNet/EfficientNet),
+- Blood-based features (e.g. methylation proxy vectors).
+
+The module applies two encoder/projection heads and a subtype-aware contrastive objective:
+- Pull together image/blood embeddings from the same molecular subtype (e.g. HER2+ with HER2+),
+- Push apart embeddings from different subtypes (e.g. HER2+ vs HER2-).
+
+### Install
+```bash
+pip install -e ".[multimodal]"
+```
+
+### Train (example config)
+```bash
+python scripts/train_multimodal.py --config configs/multimodal_her2_demo.yaml
+```
+
+Expected input tables:
+- `data.pair_table` (CSV/Parquet under data root): `patient_id`, `blood_sample_id`, `tissue_image_path`, `her2_status`, and optional `split` (`train`/`val`).
+- `data.blood_feature_table` (CSV/Parquet under data root): one row per blood sample, with `sample_id` + numeric methylation-feature columns.
+
+Key outputs are written to `train.output_dir`:
+- `best_model.pt`
+- `training_history.csv`
+- `embeddings_train.parquet`
+- `embeddings_val.parquet`
+- `summary.json`
 
 ## Config knobs
 See `configs/default.yaml` for bin sizes, chromosome lists, QC thresholds, retry counts, and paths.

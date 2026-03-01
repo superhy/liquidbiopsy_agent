@@ -1,0 +1,37 @@
+data:
+  pair_table: datasets/multimodal/her2/her2_pairs.csv
+  blood_feature_table: datasets/multimodal/her2/meth_proxy_features.parquet
+  image_base_dir: datasets/pathology_tiles/her2
+  split_col: split
+  pair_columns:
+    patient_id: patient_id
+    blood_sample_id: blood_sample_id
+    tissue_image_path: tissue_image_path
+    subtype_label: her2_status
+  blood_id_col: sample_id
+  blood_feature_cols: []
+  image_size: 224
+  batch_size: 16
+  num_workers: 0
+  val_ratio: 0.2
+
+model:
+  tissue_backbone: resnet18
+  tissue_pretrained: true
+  freeze_tissue_extractor: true
+  blood_hidden_dims: [256]
+  blood_output_dim: 256
+  freeze_blood_extractor: false
+  projection_hidden_dim: 256
+  projection_dim: 128
+  dropout: 0.1
+
+train:
+  seed: 42
+  device: auto
+  epochs: 30
+  lr: 0.001
+  weight_decay: 0.0001
+  temperature: 0.07
+  grad_clip_norm: 1.0
+  output_dir: experiments/multimodal/her2_demo

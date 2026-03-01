@@ -7,6 +7,7 @@ from pathlib import Path
 from liquidbiopsy_agent.config import Config
 from liquidbiopsy_agent.logging import setup_logging
 from liquidbiopsy_agent.pipeline.pipeline import build_pipeline, resume_pipeline
+from liquidbiopsy_agent.utils.storage import resolve_data_path
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,8 +36,9 @@ def parse_args() -> argparse.Namespace:
 
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = Config.load(Path(args.config))
-    output_dir = Path(args.output)
-    pipeline = build_pipeline(Path(args.input), output_dir, cfg, instruction=args.instruction)
+    input_path = resolve_data_path(args.input, path_kind="pipeline input", must_exist=True)
+    output_dir = resolve_data_path(args.output, path_kind="pipeline output directory", must_exist=False)
+    pipeline = build_pipeline(input_path, output_dir, cfg, instruction=args.instruction)
     setup_logging(pipeline.run_dir / "logs")
     pipeline.run()
     print(f"Run directory: {pipeline.run_dir}")
@@ -44,7 +46,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
+    run_dir = resolve_data_path(args.run_dir, path_kind="run directory", must_exist=True)
     state_path = run_dir / "logs" / "state.json"
     if not state_path.exists():
         print("No state found", file=sys.stderr)
@@ -60,7 +62,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_resume(args: argparse.Namespace) -> int:
     cfg = Config.load(Path(args.config))
-    run_dir = Path(args.run_dir)
+    run_dir = resolve_data_path(args.run_dir, path_kind="run directory", must_exist=True)
     pipeline = resume_pipeline(run_dir, cfg, instruction=args.instruction)
     setup_logging(run_dir / "logs")
     pipeline.run(resume_failed_only=True)
@@ -68,7 +70,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
 
 def cmd_clean(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
+    run_dir = resolve_data_path(args.run_dir, path_kind="run directory", must_exist=True)
     import shutil
 
     cache_dir = run_dir / "logs" / "nodes"

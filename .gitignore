@@ -2,6 +2,16 @@ __pycache__/
 *.pyc
 .venv/
 output/
+outputs/
 run_*/
 reports/
 logs/
+data/
+datasets/
+weights/
+checkpoints/
+artifacts/
+*.ckpt
+*.pt
+*.pth
+*.safetensors

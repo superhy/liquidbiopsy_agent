@@ -1,3 +1,3 @@
 """LiquidBiopsy Agent package."""
 
-__all__ = ["cli", "pipeline", "agent"]
+__all__ = ["cli", "pipeline", "agent", "multimodal"]
