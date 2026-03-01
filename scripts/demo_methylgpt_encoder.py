@@ -5,6 +5,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from liquidbiopsy_agent.multimodal.methylgpt_encoder import MinimalMethylVocab
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
@@ -28,8 +29,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_demo_vocab(n_cpg_tokens: int = 1024):
-    from liquidbiopsy_agent.multimodal.methylgpt_encoder import MinimalMethylVocab
-
     token_to_id = {"<pad>": 0}
     for i in range(1, n_cpg_tokens + 1):
         token_to_id[f"cg{i:07d}"] = i
