@@ -1,7 +1,9 @@
 data:
-  pair_table: datasets/multimodal/her2/her2_pairs.csv
-  blood_feature_table: datasets/multimodal/her2/meth_proxy_features.parquet
-  image_base_dir: datasets/pathology_tiles/her2
+  # All paths are relative to LIQUID_BIOPSY_DATA_ROOT.
+  # Current root layout contains two top-level folders: GSE243474 and TCGA-BRCA.
+  pair_table: GSE243474/path/to/her2_pairs.csv
+  blood_feature_table: GSE243474/path/to/meth_proxy_features.parquet
+  image_base_dir: TCGA-BRCA/path/to/pathology_tiles
   split_col: split
   pair_columns:
     patient_id: patient_id

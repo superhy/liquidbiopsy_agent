@@ -12,14 +12,24 @@ pip install -e .
 ## Data Root Policy
 This repository is code-only. Do not store datasets or model checkpoints in git.
 All dataset/checkpoint/output paths are resolved under one server root:
-- default root: `/liquid-biopsy-data`
-- override root: set `LIQUID_BIOPSY_DATA_ROOT=/your/fixed/server/path/liquid-biopsy-data`
+- global override (highest priority): `LIQUID_BIOPSY_DATA_ROOT`
+- Ubuntu placeholder: `/home/YOUR_UBUNTU_USER/liquid-agent-data`
+- macOS placeholder: `/Users/YOUR_MACOS_USER/liquid-agent-data`
+- Windows 11 placeholder: `C:\Users\YOUR_WINDOWS_USER\liquid-agent-data`
+- optional OS-specific overrides:
+  - `LIQUID_BIOPSY_DATA_ROOT_UBUNTU`
+  - `LIQUID_BIOPSY_DATA_ROOT_MACOS`
+  - `LIQUID_BIOPSY_DATA_ROOT_WINDOWS`
+- current top-level dataset folders under root: `GSE243474`, `TCGA-BRCA`
 
 Any runtime data or weight path must be inside that root.
 
 ## Quickstart
 ```bash
-export LIQUID_BIOPSY_DATA_ROOT=/liquid-biopsy-data
+# Linux/macOS example:
+export LIQUID_BIOPSY_DATA_ROOT=/your/fixed/server/path/liquid-agent-data
+# Windows PowerShell example:
+# $env:LIQUID_BIOPSY_DATA_ROOT='C:\your\fixed\server\path\liquid-agent-data'
 python -m liquidbiopsy_agent run --input datasets/bed/my_cohort --output runs/bed_mvp --config configs/default.yaml
 python -m liquidbiopsy_agent run --input datasets/bed/my_cohort --output runs/bed_mvp --instruction "开启所有图"
 python -m liquidbiopsy_agent status --run-dir runs/bed_mvp/run_YYYYMMDD_HHMMSS
