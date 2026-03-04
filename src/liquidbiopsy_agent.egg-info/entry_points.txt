@@ -1,0 +1,2 @@
+[console_scripts]
+liquidbiopsy-agent = liquidbiopsy_agent.cli:main

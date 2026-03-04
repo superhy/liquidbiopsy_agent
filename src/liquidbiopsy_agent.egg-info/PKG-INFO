@@ -1,0 +1,34 @@
+Metadata-Version: 2.4
+Name: liquidbiopsy-agent
+Version: 0.1.0
+Summary: Agentised cfDNA BED-based analysis pipeline
+Author: Codex
+Requires-Python: >=3.11
+Requires-Dist: pandas>=2.1
+Requires-Dist: pyarrow>=14
+Requires-Dist: numpy>=1.26
+Requires-Dist: tqdm>=4.66
+Requires-Dist: matplotlib>=3.8
+Requires-Dist: seaborn>=0.13
+Requires-Dist: jinja2>=3.1
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: tenacity>=8.2
+Requires-Dist: langgraph>=0.0.40
+Requires-Dist: pyranges>=0.0.129
+Provides-Extra: report
+Requires-Dist: weasyprint>=59; extra == "report"
+Provides-Extra: ml
+Requires-Dist: scikit-learn>=1.3; extra == "ml"
+Provides-Extra: local-llm
+Requires-Dist: llama-cpp-python>=0.2.0; extra == "local-llm"
+Provides-Extra: llm-openai
+Requires-Dist: openai>=1.0; extra == "llm-openai"
+Provides-Extra: tools
+Requires-Dist: openpyxl>=3.1; extra == "tools"
+Provides-Extra: multimodal
+Requires-Dist: torch>=2.2; extra == "multimodal"
+Requires-Dist: torchvision>=0.17; extra == "multimodal"
+Requires-Dist: pillow>=10.0; extra == "multimodal"
+Requires-Dist: transformers>=4.38; extra == "multimodal"
+Requires-Dist: pyfaidx>=0.8; extra == "multimodal"
+Requires-Dist: enformer-pytorch>=0.8; extra == "multimodal"

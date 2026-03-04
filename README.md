@@ -9,6 +9,11 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+Install all optional features (reporting, multimodal, local/openai LLM, tools):
+```bash
+pip install -e ".[report,ml,local-llm,llm-openai,multimodal,tools]"
+```
+
 ## Data Root Policy
 This repository is code-only. Do not store datasets or model checkpoints in git.
 All dataset/checkpoint/output paths are resolved under one server root:
@@ -68,6 +73,14 @@ Example (llama.cpp local model):
 pip install -e ".[local-llm]"
 export LIQUIDBIOPSY_LLM_PROVIDER=local_llama_cpp
 export LIQUIDBIOPSY_LLM_MODEL_PATH=weights/llm/your_model.gguf
+```
+
+Example (OpenAI API):
+```bash
+pip install -e ".[llm-openai]"
+export LIQUIDBIOPSY_LLM_PROVIDER=openai
+export LIQUIDBIOPSY_LLM_MODEL=gpt-4o-mini
+export OPENAI_API_KEY=your_api_key
 ```
 
 ## Agent interpretation outputs
