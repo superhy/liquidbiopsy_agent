@@ -265,7 +265,9 @@ def move_files_by_cancer_type_from_study_name(
     ]
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = root_path / f"move_log_{timestamp}.txt"
+    log_dir = root_path / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"move_log_{timestamp}.txt"
 
     moved_to_breast = 0
     moved_to_others = 0

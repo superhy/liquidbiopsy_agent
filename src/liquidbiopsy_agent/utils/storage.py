@@ -14,8 +14,8 @@ DATA_ROOT_ENV_WINDOWS = "LIQUID_BIOPSY_DATA_ROOT_WINDOWS"
 # OS-specific placeholders. Update these once per machine if you do not use env vars.
 # TODO(you): set your Ubuntu root prefix, then keep "liquid-agent-data" as the data folder name.
 DEFAULT_DATA_ROOT_UBUNTU = Path("/home/YOUR_UBUNTU_ROOT_PREFIX") / "liquid-agent-data"
-# TODO(you): set your macOS root prefix, then keep "liquid-agent-data" as the data folder name.
-DEFAULT_DATA_ROOT_MACOS = Path("/Users/YOUR_MACOS_ROOT_PREFIX") / "liquid-agent-data"
+# macOS default root prefix is /Volumes/US202, so data root resolves to /Volumes/US202/liquid-agent-data.
+DEFAULT_DATA_ROOT_MACOS = Path("/Volumes/US202") / "liquid-agent-data"
 # Windows default root prefix is F:\, so data root resolves to F:\liquid-agent-data.
 DEFAULT_DATA_ROOT_WINDOWS = Path(r"F:\\") / "liquid-agent-data"
 

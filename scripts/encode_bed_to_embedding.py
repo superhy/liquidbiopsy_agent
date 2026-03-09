@@ -4,9 +4,14 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Sequence
+
+import numpy as np
+import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
@@ -69,6 +74,11 @@ PRESET_CASE_IN_MAIN = "smoke_mask_from_raw"
 PRESET_INPUT_DIR = r"F:\liquid-agent-data\GSE243474\breast"
 PRESET_FASTA_PATH = r"F:\genome\hg38.fa"  # TODO: replace with your local FASTA path
 PRESET_OUTPUT_BASE = r"F:\liquid-agent-data\GSE243474\embeddings_beginner_tests"
+
+# Quick smoke-test defaults (for fast local sanity checks on macOS data layout).
+QUICK_SMOKE_DEFAULT_INPUT_REL = "GSE243474/breast"
+QUICK_SMOKE_DEFAULT_OUTPUT_REL = "GSE243474/encoder_smoke_test"
+QUICK_SMOKE_DEFAULT_MODELS = ("ntv2", "dnabert2", "hyenadna", "caduceus", "epibert", "enformer")
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -153,6 +163,49 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--inspect_only",
         action="store_true",
         help="Only inspect file and exit without running embedding encoding.",
+    )
+    parser.add_argument(
+        "--quick_smoke_test",
+        action="store_true",
+        help="Run quick multi-encoder smoke test on 1-2 BED files from GSE243474/breast.",
+    )
+    parser.add_argument(
+        "--quick_input_dir",
+        default=None,
+        type=str,
+        help="Optional input directory for quick smoke test. Default: GSE243474/breast under data root.",
+    )
+    parser.add_argument(
+        "--quick_output_dir",
+        default=None,
+        type=str,
+        help="Optional output directory for quick smoke test. Default: GSE243474/encoder_smoke_test under data root.",
+    )
+    parser.add_argument(
+        "--quick_fasta",
+        default="auto",
+        type=str,
+        help="FASTA path for quick smoke test, or 'auto' to search common locations under data root.",
+    )
+    parser.add_argument(
+        "--quick_models",
+        nargs="+",
+        default=None,
+        help=(
+            "Model keys for quick smoke test. Default: "
+            f"{', '.join(QUICK_SMOKE_DEFAULT_MODELS)}"
+        ),
+    )
+    parser.add_argument(
+        "--quick_max_files",
+        default=2,
+        type=int,
+        help="How many BED files to sample in quick smoke test (default: 2).",
+    )
+    parser.add_argument(
+        "--quick_allow_model_download",
+        action="store_true",
+        help="Allow model download in quick smoke test (default is local-only mode).",
     )
     parser.add_argument("--quiet", action="store_true", help="Disable verbose logging.")
     return parser
@@ -392,6 +445,221 @@ def _run_encoding_from_args(args) -> dict:
     )
 
 
+def _resolve_quick_smoke_fasta(fasta_value: str) -> Path:
+    from liquidbiopsy_agent.utils.storage import get_data_root, resolve_data_path
+
+    raw = (fasta_value or "auto").strip()
+    if raw.lower() != "auto":
+        direct = Path(raw).expanduser()
+        if direct.exists() and direct.is_file():
+            return direct.resolve()
+        resolved = resolve_data_path(raw, path_kind="quick smoke FASTA path", must_exist=True)
+        if not resolved.is_file():
+            raise FileNotFoundError(f"quick smoke FASTA path is not a file: {resolved}")
+        return resolved
+
+    data_root = get_data_root()
+    auto_candidates = [
+        data_root / "genome" / "hg38.fa",
+        data_root / "reference" / "hg38.fa",
+        data_root / "genome" / "GRCh38.fa",
+        data_root / "reference" / "GRCh38.fa",
+        data_root / "genome" / "hg19.fa",
+        data_root / "reference" / "hg19.fa",
+        Path("/Volumes/US202/liquid-agent-data/genome/hg38.fa"),
+        Path("/Volumes/US202/liquid-agent-data/reference/hg38.fa"),
+    ]
+    for p in auto_candidates:
+        if p.exists() and p.is_file():
+            return p.resolve()
+    raise FileNotFoundError(
+        "Quick smoke FASTA not found. Please pass --quick_fasta /abs/path/to/hg38.fa "
+        "or place FASTA under <data_root>/genome or <data_root>/reference."
+    )
+
+
+def _prepare_quick_smoke_subset(input_dir: Path, subset_dir: Path, max_files: int) -> list[Path]:
+    bed_files = sorted(
+        [
+            p
+            for p in input_dir.iterdir()
+            if p.is_file()
+            and not p.name.startswith("._")
+            and p.name.lower().endswith((".bed", ".bed.gz"))
+        ]
+    )
+    if not bed_files:
+        raise ValueError(f"No BED/BED.GZ files found in quick smoke input: {input_dir}")
+
+    n = max(1, int(max_files))
+    chosen = bed_files[:n]
+
+    subset_dir.mkdir(parents=True, exist_ok=True)
+    for old in subset_dir.iterdir():
+        if old.is_file() or old.is_symlink():
+            old.unlink()
+
+    for src in chosen:
+        dst = subset_dir / src.name
+        try:
+            dst.symlink_to(src)
+        except OSError:
+            shutil.copy2(src, dst)
+
+    return chosen
+
+
+def _embedding_basic_stats(embeddings_csv: Path, *, head_dims: int = 8) -> dict[str, Any]:
+    df = pd.read_csv(embeddings_csv)
+    emb_cols = [c for c in df.columns if c.startswith("emb_")]
+    if df.empty or not emb_cols:
+        return {
+            "samples": int(len(df)),
+            "embedding_dim": 0,
+            "value_mean": None,
+            "value_std": None,
+            "value_min": None,
+            "value_max": None,
+            "first_sample_head": [],
+        }
+
+    arr = df[emb_cols].to_numpy(dtype=np.float32)
+    finite = arr[np.isfinite(arr)]
+    first_head = arr[0, : min(head_dims, arr.shape[1])]
+    first_head_list = [float(v) if np.isfinite(v) else None for v in first_head.tolist()]
+
+    if finite.size == 0:
+        mean_v = std_v = min_v = max_v = None
+    else:
+        mean_v = float(finite.mean())
+        std_v = float(finite.std())
+        min_v = float(finite.min())
+        max_v = float(finite.max())
+
+    return {
+        "samples": int(arr.shape[0]),
+        "embedding_dim": int(arr.shape[1]),
+        "value_mean": mean_v,
+        "value_std": std_v,
+        "value_min": min_v,
+        "value_max": max_v,
+        "first_sample_head": first_head_list,
+    }
+
+
+def run_quick_encoder_smoke_test(
+    *,
+    input_dir: str | Path | None = None,
+    output_dir: str | Path | None = None,
+    fasta_path: str = "auto",
+    model_keys: Sequence[str] | None = None,
+    max_files: int = 2,
+    max_intervals: int = 64,
+    allow_model_download: bool = False,
+    device: str = "auto",
+) -> dict[str, Any]:
+    """
+    Quick smoke test for multiple encoders on 1-2 BED files.
+
+    Default flow:
+    - Input: GSE243474/breast under data root
+    - Select first 1-2 BED files
+    - Run multiple encoder backbones (mask_from_raw mode)
+    - Print basic embedding stats per encoder
+    """
+    from liquidbiopsy_agent.multimodal.bed_embedding import encode_bed_folder_to_embeddings
+    from liquidbiopsy_agent.utils.storage import resolve_data_path
+
+    models = list(model_keys) if model_keys else list(QUICK_SMOKE_DEFAULT_MODELS)
+    input_path = resolve_data_path(
+        input_dir or QUICK_SMOKE_DEFAULT_INPUT_REL,
+        path_kind="quick smoke input dir",
+        must_exist=True,
+    )
+    output_base = resolve_data_path(
+        output_dir or QUICK_SMOKE_DEFAULT_OUTPUT_REL,
+        path_kind="quick smoke output dir",
+        must_exist=False,
+    )
+    fasta_file = _resolve_quick_smoke_fasta(fasta_path)
+    output_base.mkdir(parents=True, exist_ok=True)
+
+    subset_dir = output_base / "_subset_bed_files"
+    chosen_files = _prepare_quick_smoke_subset(
+        input_dir=input_path,
+        subset_dir=subset_dir,
+        max_files=max_files,
+    )
+
+    print("[QUICK_SMOKE] Running encoder smoke test.")
+    print(f"[QUICK_SMOKE] input_dir={input_path}")
+    print(f"[QUICK_SMOKE] fasta={fasta_file}")
+    print(f"[QUICK_SMOKE] output_base={output_base}")
+    print(f"[QUICK_SMOKE] chosen_files={[p.name for p in chosen_files]}")
+    print(f"[QUICK_SMOKE] models={models}")
+
+    results: list[dict[str, Any]] = []
+    for model_key in models:
+        run_output = output_base / f"{model_key}_mask_from_raw"
+        print(f"[QUICK_SMOKE] >>> model={model_key}")
+        try:
+            summary = encode_bed_folder_to_embeddings(
+                input_dir=subset_dir,
+                fasta_path=fasta_file,
+                output_dir=run_output,
+                model_key=model_key,
+                max_intervals_per_file=max(8, int(max_intervals)),
+                batch_size=8,
+                seed=42,
+                local_files_only=not allow_model_download,
+                device=device,
+                verbose=True,
+                preview_samples=min(len(chosen_files), 2),
+                preview_dims=8,
+                peak_mode="mask_from_raw",
+            )
+            stats = _embedding_basic_stats(Path(summary["embeddings_csv"]), head_dims=8)
+            result_item = {
+                "model_key": model_key,
+                "status": "ok",
+                "summary": {
+                    "embedding_dim": summary.get("embedding_dim"),
+                    "files_processed": summary.get("files_processed"),
+                    "status_counts": summary.get("status_counts"),
+                    "embeddings_csv": summary.get("embeddings_csv"),
+                    "metadata_csv": summary.get("metadata_csv"),
+                },
+                "basic_stats": stats,
+            }
+            print(
+                f"[QUICK_SMOKE] model={model_key} ok "
+                f"emb_dim={stats['embedding_dim']} samples={stats['samples']} "
+                f"mean={stats['value_mean']} std={stats['value_std']}"
+            )
+        except Exception as exc:
+            result_item = {
+                "model_key": model_key,
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            print(f"[QUICK_SMOKE] model={model_key} error: {result_item['error']}")
+        results.append(result_item)
+
+    summary_out = {
+        "input_dir": str(input_path),
+        "subset_dir": str(subset_dir),
+        "subset_files": [p.name for p in chosen_files],
+        "fasta_path": str(fasta_file),
+        "output_base_dir": str(output_base),
+        "models": models,
+        "results": results,
+    }
+    summary_path = output_base / "quick_smoke_summary.json"
+    summary_path.write_text(json.dumps(summary_out, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[QUICK_SMOKE] summary_json={summary_path}")
+    return summary_out
+
+
 def main() -> None:
     if RUN_PRESET_IN_MAIN:
         preset = _build_beginner_case(PRESET_CASE_IN_MAIN)
@@ -413,6 +681,20 @@ def main() -> None:
         return
 
     args = _build_arg_parser().parse_args()
+    if args.quick_smoke_test:
+        summary = run_quick_encoder_smoke_test(
+            input_dir=args.quick_input_dir,
+            output_dir=args.quick_output_dir,
+            fasta_path=args.quick_fasta,
+            model_keys=args.quick_models,
+            max_files=args.quick_max_files,
+            allow_model_download=args.quick_allow_model_download,
+            device=args.device,
+        )
+        print("[QUICK_SMOKE_SUMMARY]")
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return
+
     if args.inspect_file:
         inspect_target = Path(args.inspect_file)
         if not inspect_target.exists() and args.input_dir:

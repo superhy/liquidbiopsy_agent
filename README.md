@@ -18,14 +18,15 @@ pip install -e ".[report,ml,local-llm,llm-openai,multimodal,tools]"
 This repository is code-only. Do not store datasets or model checkpoints in git.
 All dataset/checkpoint/output paths are resolved under one server root:
 - global override (highest priority): `LIQUID_BIOPSY_DATA_ROOT`
-- Ubuntu placeholder: `/home/YOUR_UBUNTU_USER/liquid-agent-data`
-- macOS placeholder: `/Users/YOUR_MACOS_USER/liquid-agent-data`
-- Windows 11 placeholder: `C:\Users\YOUR_WINDOWS_USER\liquid-agent-data`
+- Ubuntu default (placeholder in code): `/home/YOUR_UBUNTU_ROOT_PREFIX/liquid-agent-data`
+- macOS default: `/Volumes/US202/liquid-agent-data`
+- Windows default: `F:\liquid-agent-data`
 - optional OS-specific overrides:
   - `LIQUID_BIOPSY_DATA_ROOT_UBUNTU`
   - `LIQUID_BIOPSY_DATA_ROOT_MACOS`
   - `LIQUID_BIOPSY_DATA_ROOT_WINDOWS`
 - current top-level dataset folders under root: `GSE243474`, `TCGA-BRCA`
+- run-operation logs (when written by scripts): `GSE243474/log`
 
 Any runtime data or weight path must be inside that root.
 
@@ -108,6 +109,21 @@ pip install -e ".[multimodal]"
 ```bash
 python scripts/train_multimodal.py --config configs/multimodal_her2_demo.yaml
 ```
+
+### Quick encoder smoke test (1-2 cfDNA BED samples)
+```bash
+python scripts/encode_bed_to_embedding.py --quick_smoke_test
+
+# If FASTA is not in <data_root>/genome or <data_root>/reference, pass explicit path:
+python scripts/encode_bed_to_embedding.py \
+  --quick_smoke_test \
+  --quick_fasta /absolute/path/to/hg38.fa
+```
+
+Optional flags:
+- `--quick_models ntv2 dnabert2 hyenadna` (choose specific encoders)
+- `--quick_max_files 1` (use only one BED sample)
+- `--quick_allow_model_download` (allow weight download if local weights are missing)
 
 Expected input tables:
 - `data.pair_table` (CSV/Parquet under data root): `patient_id`, `blood_sample_id`, `tissue_image_path`, `her2_status`, and optional `split` (`train`/`val`).

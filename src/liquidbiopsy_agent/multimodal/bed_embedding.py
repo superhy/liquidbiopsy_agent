@@ -55,7 +55,15 @@ def _is_narrow_peak_file(file_name: str) -> bool:
 
 
 def _collect_bed_files(input_path: Path, peak_mode: str) -> tuple[list[Path], str]:
-    all_bed = sorted([p for p in input_path.iterdir() if p.is_file() and re.search(r"\.bed(\.gz)?$", p.name, re.I)])
+    all_bed = sorted(
+        [
+            p
+            for p in input_path.iterdir()
+            if p.is_file()
+            and not p.name.startswith("._")
+            and re.search(r"\.bed(\.gz)?$", p.name, re.I)
+        ]
+    )
     if not all_bed:
         return [], "none"
 
