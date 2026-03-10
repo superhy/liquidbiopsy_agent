@@ -77,8 +77,10 @@ PRESET_OUTPUT_BASE = r"F:\liquid-agent-data\GSE243474\embeddings_beginner_tests"
 
 # Quick smoke-test defaults (for fast local sanity checks on macOS data layout).
 QUICK_SMOKE_DEFAULT_INPUT_REL = "GSE243474/breast"
-QUICK_SMOKE_DEFAULT_OUTPUT_REL = "GSE243474/encoder_smoke_test"
+QUICK_SMOKE_DEFAULT_OUTPUT_REL = "GSE243474/features/smoke_test"
 QUICK_SMOKE_DEFAULT_MODELS = ("ntv2", "dnabert2", "hyenadna", "caduceus", "epibert", "enformer")
+GSE243474_FEATURES_ROOT_REL = Path("GSE243474") / "features"
+GSE243474_TARGET_COHORT = "breast"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -87,7 +89,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input_dir", default=None, type=str, help="Folder containing BED/BED.GZ files.")
     parser.add_argument("--fasta", default=None, type=str, help="Local reference genome FASTA path.")
-    parser.add_argument("--output_dir", default=None, type=str, help="Output directory. Default: <input_dir>/embeddings")
+    parser.add_argument(
+        "--output_dir",
+        default=None,
+        type=str,
+        help=(
+            "Output directory under data root. Default uses standardized cfDNA feature layout: "
+            "GSE243474/features/<model>/breast/<peak_mode>."
+        ),
+    )
     parser.add_argument(
         "--model",
         default="ntv2",
@@ -129,7 +139,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--batch_size", default=None, type=int, help="Batch size for model inference.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed for interval sampling.")
-    parser.add_argument("--device", default="auto", type=str, help="Device: auto/cpu/cuda/cuda:0 ...")
+    parser.add_argument(
+        "--device",
+        default="auto",
+        type=str,
+        help=(
+            "Device: auto/cpu/cuda/cuda:0/mps ... "
+            "(auto: CUDA on Linux/Windows, MPS on Apple Silicon macOS, else CPU)"
+        ),
+    )
     parser.add_argument(
         "--preview_samples",
         default=3,
@@ -179,7 +197,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--quick_output_dir",
         default=None,
         type=str,
-        help="Optional output directory for quick smoke test. Default: GSE243474/encoder_smoke_test under data root.",
+        help=(
+            "Optional workspace output dir for quick smoke test. "
+            "If omitted, run outputs are written to "
+            "GSE243474/features/<model>/breast/smoke_test/mask_from_raw "
+            "and smoke metadata is written under GSE243474/features/smoke_test."
+        ),
     )
     parser.add_argument(
         "--quick_fasta",
@@ -290,7 +313,15 @@ def summarize_input_folder(input_dir: str | Path, *, preview_files: int = 2, pre
     if not root.exists() or not root.is_dir():
         raise FileNotFoundError(f"Input directory not found: {root}")
 
-    files = sorted([p for p in root.iterdir() if p.is_file() and p.name.lower().endswith((".bed", ".bed.gz"))])
+    files = sorted(
+        [
+            p
+            for p in root.iterdir()
+            if p.is_file()
+            and not p.name.startswith("._")
+            and p.name.lower().endswith((".bed", ".bed.gz"))
+        ]
+    )
     narrow = [p for p in files if _is_narrow_peak_name(p.name)]
     raw = [p for p in files if not _is_narrow_peak_name(p.name)]
     out = {
@@ -392,6 +423,27 @@ def _build_beginner_case(case_name: str) -> dict:
     return presets[case_name]
 
 
+def _resolve_output_dir(path_value: str | Path) -> Path:
+    from liquidbiopsy_agent.utils.storage import resolve_data_path
+
+    return resolve_data_path(path_value, path_kind="BED encoding output dir", must_exist=False)
+
+
+def _default_feature_output_dir(
+    *,
+    model_key: str,
+    peak_mode: str,
+    smoke_test: bool = False,
+) -> Path:
+    rel = GSE243474_FEATURES_ROOT_REL / model_key / GSE243474_TARGET_COHORT
+    if smoke_test:
+        rel = rel / "smoke_test"
+    rel = rel / peak_mode
+    out = _resolve_output_dir(rel)
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
 def _run_encoding_from_args(args) -> dict:
     from liquidbiopsy_agent.multimodal.bed_embedding import encode_bed_folder_to_embeddings
 
@@ -401,7 +453,16 @@ def _run_encoding_from_args(args) -> dict:
         print(json.dumps(input_summary, ensure_ascii=False, indent=2))
 
     if args.peak_mode == "both":
-        base_output = Path(args.output_dir) if args.output_dir else (Path(args.input_dir) / "embeddings_peak_mode_compare")
+        base_output = (
+            _resolve_output_dir(args.output_dir)
+            if args.output_dir
+            else _default_feature_output_dir(
+                model_key=args.model,
+                peak_mode="peak_mode_compare",
+                smoke_test=False,
+            )
+        )
+        base_output.mkdir(parents=True, exist_ok=True)
         summaries: dict[str, dict] = {}
         for mode in ("mask_from_raw", "direct_narrow_peak"):
             run_output = base_output / mode
@@ -425,10 +486,19 @@ def _run_encoding_from_args(args) -> dict:
             )
         return {"peak_mode": "both", "runs": summaries}
 
+    resolved_output = (
+        _resolve_output_dir(args.output_dir)
+        if args.output_dir
+        else _default_feature_output_dir(
+            model_key=args.model,
+            peak_mode=args.peak_mode,
+            smoke_test=False,
+        )
+    )
     return encode_bed_folder_to_embeddings(
         input_dir=args.input_dir,
         fasta_path=args.fasta,
-        output_dir=args.output_dir,
+        output_dir=resolved_output,
         model_key=args.model,
         model_name=args.model_name,
         model_root=args.model_root,
@@ -566,6 +636,12 @@ def run_quick_encoder_smoke_test(
     - Select first 1-2 BED files
     - Run multiple encoder backbones (mask_from_raw mode)
     - Print basic embedding stats per encoder
+
+    CLI quickstart examples:
+    - python scripts/encode_bed_to_embedding.py --quick_smoke_test
+    - python scripts/encode_bed_to_embedding.py --quick_smoke_test --quick_models ntv2 dnabert2
+    - python scripts/encode_bed_to_embedding.py --quick_smoke_test --quick_max_files 1
+    - python scripts/encode_bed_to_embedding.py --quick_smoke_test --quick_fasta /absolute/path/to/hg38.fa
     """
     from liquidbiopsy_agent.multimodal.bed_embedding import encode_bed_folder_to_embeddings
     from liquidbiopsy_agent.utils.storage import resolve_data_path
@@ -600,7 +676,16 @@ def run_quick_encoder_smoke_test(
 
     results: list[dict[str, Any]] = []
     for model_key in models:
-        run_output = output_base / f"{model_key}_mask_from_raw"
+        print()
+        run_output = (
+            _resolve_output_dir(output_base / f"{model_key}_mask_from_raw")
+            if output_dir
+            else _default_feature_output_dir(
+                model_key=model_key,
+                peak_mode="mask_from_raw",
+                smoke_test=True,
+            )
+        )
         print(f"[QUICK_SMOKE] >>> model={model_key}")
         try:
             summary = encode_bed_folder_to_embeddings(
@@ -627,6 +712,9 @@ def run_quick_encoder_smoke_test(
                     "files_processed": summary.get("files_processed"),
                     "status_counts": summary.get("status_counts"),
                     "embeddings_csv": summary.get("embeddings_csv"),
+                    "embeddings_by_sample_csv": summary.get("embeddings_by_sample_csv"),
+                    "embeddings_by_sample_pt": summary.get("embeddings_by_sample_pt"),
+                    "sample_id_to_row_json": summary.get("sample_id_to_row_json"),
                     "metadata_csv": summary.get("metadata_csv"),
                 },
                 "basic_stats": stats,

@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from transformers import AutoModel, AutoModelForMaskedLM, AutoTokenizer
 from liquidbiopsy_agent.utils.storage import get_models_root, resolve_data_path
+from liquidbiopsy_agent.utils.device import resolve_torch_device
 
 DEFAULT_MODEL_NTV2 = "InstaDeepAI/nucleotide-transformer-v2-50m-multi-species"
 DEFAULT_MODEL_DNABERT2 = "zhihan1996/DNABERT-2-117M"
@@ -52,9 +53,7 @@ class EncoderInputProfile:
 
 
 def _resolve_device(device: str = "auto") -> torch.device:
-    if device != "auto":
-        return torch.device(device)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return resolve_torch_device(device)
 
 
 def _mean_pool_last_hidden(last_hidden: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import random
 import re
 import zlib
@@ -9,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import torch
 from pyfaidx import Fasta
 from tqdm import tqdm
 
@@ -385,6 +387,13 @@ def encode_bed_folder_to_embeddings(
     emb_parquet = output_path / "embeddings.parquet"
     emb_csv = output_path / "embeddings.csv"
     meta_csv = output_path / "metadata.csv"
+    emb_by_sample_parquet = output_path / "embeddings_by_sample.parquet"
+    emb_by_sample_csv = output_path / "embeddings_by_sample.csv"
+    safe_model = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(encoder.model_key))
+    safe_mode = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(peak_mode_norm))
+    emb_by_sample_pt = output_path / f"embeddings_by_sample__model-{safe_model}__mode-{safe_mode}.pt"
+    emb_by_sample_pt_legacy = output_path / "embeddings_by_sample.pt"
+    sample_index_json = output_path / "sample_id_to_row.json"
 
     parquet_ok = True
     try:
@@ -395,6 +404,34 @@ def encode_bed_folder_to_embeddings(
             print(f"[WARN] Failed to write parquet ({exc}), fallback to CSV only.")
     emb_df.to_csv(emb_csv, index=False)
     meta_df.to_csv(meta_csv, index=False)
+
+    emb_by_sample_df = emb_df.sort_values("sample_id").reset_index(drop=True)
+    by_sample_parquet_ok = True
+    try:
+        emb_by_sample_df.to_parquet(emb_by_sample_parquet, index=False)
+    except Exception as exc:
+        by_sample_parquet_ok = False
+        if verbose:
+            print(f"[WARN] Failed to write sample-indexed parquet ({exc}), fallback to CSV only.")
+    emb_by_sample_df.to_csv(emb_by_sample_csv, index=False)
+    sample_to_row = {str(sid): int(i) for i, sid in enumerate(emb_by_sample_df["sample_id"].tolist())}
+    sample_index_json.write_text(json.dumps(sample_to_row, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    emb_cols = [c for c in emb_by_sample_df.columns if c.startswith("emb_")]
+    pt_ok = True
+    try:
+        emb_matrix = emb_by_sample_df[emb_cols].to_numpy(dtype=np.float32, copy=True)
+        emb_tensor = torch.from_numpy(np.ascontiguousarray(emb_matrix))
+        sample_ids = emb_by_sample_df["sample_id"].astype(str).tolist()
+        # Fast random query payload: sample_id -> sample_feature tensor.
+        pt_payload = {sid: emb_tensor[idx] for idx, sid in enumerate(sample_ids)}
+        torch.save(pt_payload, emb_by_sample_pt)
+        # Backward-compatible alias for previous default filename.
+        torch.save(pt_payload, emb_by_sample_pt_legacy)
+    except Exception as exc:
+        pt_ok = False
+        if verbose:
+            print(f"[WARN] Failed to write torch feature file ({exc}).")
 
     status_counts = meta_df["status"].value_counts(dropna=False).to_dict()
     summary = {
@@ -414,6 +451,11 @@ def encode_bed_folder_to_embeddings(
         "status_counts": status_counts,
         "embeddings_parquet": str(emb_parquet) if parquet_ok else None,
         "embeddings_csv": str(emb_csv),
+        "embeddings_by_sample_parquet": str(emb_by_sample_parquet) if by_sample_parquet_ok else None,
+        "embeddings_by_sample_csv": str(emb_by_sample_csv),
+        "embeddings_by_sample_pt": str(emb_by_sample_pt) if pt_ok else None,
+        "embeddings_by_sample_pt_legacy": str(emb_by_sample_pt_legacy) if pt_ok else None,
+        "sample_id_to_row_json": str(sample_index_json),
         "metadata_csv": str(meta_csv),
         "preview_samples_printed": len(preview_rows),
     }
@@ -439,6 +481,13 @@ def encode_bed_folder_to_embeddings(
         if summary["embeddings_parquet"]:
             print(f"[DONE] embeddings_parquet: {summary['embeddings_parquet']}")
         print(f"[DONE] embeddings_csv: {summary['embeddings_csv']}")
+        if summary["embeddings_by_sample_parquet"]:
+            print(f"[DONE] embeddings_by_sample_parquet: {summary['embeddings_by_sample_parquet']}")
+        print(f"[DONE] embeddings_by_sample_csv: {summary['embeddings_by_sample_csv']}")
+        if summary["embeddings_by_sample_pt"]:
+            print(f"[DONE] embeddings_by_sample_pt: {summary['embeddings_by_sample_pt']}")
+            print(f"[DONE] embeddings_by_sample_pt_legacy: {summary['embeddings_by_sample_pt_legacy']}")
+        print(f"[DONE] sample_id_to_row_json: {summary['sample_id_to_row_json']}")
         print(f"[DONE] metadata_csv: {summary['metadata_csv']}")
 
     return summary

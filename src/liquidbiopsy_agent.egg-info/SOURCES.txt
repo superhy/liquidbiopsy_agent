@@ -26,6 +26,7 @@ src/liquidbiopsy_agent/multimodal/extractors.py
 src/liquidbiopsy_agent/multimodal/losses.py
 src/liquidbiopsy_agent/multimodal/model.py
 src/liquidbiopsy_agent/multimodal/train.py
+src/liquidbiopsy_agent/multimodal/wsi_encoding.py
 src/liquidbiopsy_agent/pipeline/__init__.py
 src/liquidbiopsy_agent/pipeline/pipeline.py
 src/liquidbiopsy_agent/pipeline/nodes/__init__.py
@@ -40,6 +41,7 @@ src/liquidbiopsy_agent/pipeline/nodes/meth_proxy.py
 src/liquidbiopsy_agent/pipeline/nodes/qc.py
 src/liquidbiopsy_agent/pipeline/nodes/report.py
 src/liquidbiopsy_agent/pipeline/nodes/schema.py
+src/liquidbiopsy_agent/utils/device.py
 src/liquidbiopsy_agent/utils/hashing.py
 src/liquidbiopsy_agent/utils/io.py
 src/liquidbiopsy_agent/utils/plotting.py

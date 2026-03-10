@@ -9,9 +9,9 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-Install all optional features (reporting, multimodal, local/openai LLM, tools):
+Install all optional features (reporting, multimodal, WSI, local/openai LLM, tools):
 ```bash
-pip install -e ".[report,ml,local-llm,llm-openai,multimodal,tools]"
+pip install -e ".[report,ml,local-llm,llm-openai,multimodal,wsi,tools]"
 ```
 
 ## Data Root Policy
@@ -124,6 +124,42 @@ Optional flags:
 - `--quick_models ntv2 dnabert2 hyenadna` (choose specific encoders)
 - `--quick_max_files 1` (use only one BED sample)
 - `--quick_allow_model_download` (allow weight download if local weights are missing)
+
+### WSI pathology encoder (TRIDENT + UNI-V2 + TANGLE)
+WSI pipeline entrypoint:
+```bash
+python scripts/encode_wsi_to_slide_embedding.py
+```
+
+Default data paths (resolved under data root):
+- slides: `TCGA-BRCA/slides`
+- models root: `models`
+- outputs: `TCGA-BRCA/wsi_embeddings`
+
+Important implementation detail:
+- TRIDENT/TANGLE are loaded as source repositories from `models/third_party/` at runtime.
+- They are not imported from pip-installed `trident`/`tangle` packages in the active Python environment.
+- Default clone targets:
+  - `<data_root>/models/third_party/TRIDENT`
+  - `<data_root>/models/third_party/TANGLE`
+- You can override repo locations per run:
+  - `--trident_repo_dir /absolute/path/to/TRIDENT`
+  - `--tangle_repo_dir /absolute/path/to/TANGLE`
+
+Why `third_party` is kept under data root:
+- Keeps upstream code isolated from this project source tree.
+- Makes updating/replacing upstream repos explicit.
+- Avoids coupling runtime behavior to whichever packages happen to be installed in an env.
+
+Intermediate files and whether they are needed:
+- TRIDENT stage writes segmentation/coords/patch features (e.g. `contours*`, `*_overlap/patches`, `features_uni_v2`).
+- TANGLE stage writes slide embeddings (`slide_embeddings.{parquet,csv,pkl}`).
+- These files are used for resume/debug/reuse (e.g. rerun TANGLE without recomputing TRIDENT).
+- They can be deleted, but deleted stages must be recomputed in future runs.
+
+Non-CUDA safety guard:
+- On non-CUDA devices (Apple MPS/CPU), artifact-removal substage is auto-disabled to avoid TRIDENT CUDA-path crashes.
+- This auto-guard is applied even if artifact-removal-related flags are enabled.
 
 Expected input tables:
 - `data.pair_table` (CSV/Parquet under data root): `patient_id`, `blood_sample_id`, `tissue_image_path`, `her2_status`, and optional `split` (`train`/`val`).

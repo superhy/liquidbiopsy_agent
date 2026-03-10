@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 from liquidbiopsy_agent.utils.storage import ensure_within_data_root, resolve_data_path
+from liquidbiopsy_agent.utils.device import resolve_torch_device, should_pin_memory
 
 
 def _read_table(path: Path) -> pd.DataFrame:
@@ -189,6 +190,7 @@ def build_dataloaders(
     seed: int,
     image_base_dir: Optional[Path] = None,
     split_col: Optional[str] = None,
+    device: torch.device | str = "auto",
 ) -> Tuple[DataLoader, DataLoader, Dict[str, Any]]:
     pair_df = _read_table(pair_table_path)
     blood_df = _read_table(blood_feature_table_path)
@@ -263,19 +265,22 @@ def build_dataloaders(
         augment=False,
     )
 
+    resolved_device = resolve_torch_device(str(device))
+    pin_memory = should_pin_memory(resolved_device)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=pin_memory,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=pin_memory,
     )
     metadata = {
         "blood_input_dim": len(blood_feature_cols),

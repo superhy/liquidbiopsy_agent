@@ -16,6 +16,7 @@ from .data import build_dataloaders
 from .extractors import BloodFoundationExtractor, build_tissue_extractor
 from .losses import SubtypeAwareContrastiveLoss
 from .model import CrossModalModel, ProjectionHead
+from liquidbiopsy_agent.utils.device import resolve_torch_device
 from liquidbiopsy_agent.utils.storage import get_data_root, resolve_data_path
 
 
@@ -28,14 +29,6 @@ def _set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-
-def _resolve_device(device_str: str) -> torch.device:
-    if device_str != "auto":
-        return torch.device(device_str)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
 
 
 def _build_model(config: MultiModalConfig, blood_input_dim: int) -> CrossModalModel:
@@ -205,6 +198,7 @@ def train_from_config(config_path: Path) -> Dict[str, Any]:
     blood_id_col = str(config.get("data.blood_id_col", "sample_id"))
     blood_feature_cols = config.get("data.blood_feature_cols", None)
     image_base_dir = config.get("data.image_base_dir", None)
+    device = resolve_torch_device(str(config.get("train.device", "auto")))
     image_base = (
         resolve_data_path(image_base_dir, path_kind="image base directory", must_exist=True)
         if image_base_dir
@@ -224,10 +218,10 @@ def train_from_config(config_path: Path) -> Dict[str, Any]:
         seed=seed,
         image_base_dir=image_base,
         split_col=split_col,
+        device=device,
     )
 
     model = _build_model(config, metadata["blood_input_dim"])
-    device = _resolve_device(str(config.get("train.device", "auto")))
     model.to(device)
 
     temperature = float(config.get("train.temperature", 0.07))
@@ -250,6 +244,7 @@ def train_from_config(config_path: Path) -> Dict[str, Any]:
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     LOGGER.info("Using data root: %s", get_data_root())
+    LOGGER.info("Using torch device: %s", device)
     LOGGER.info("Training outputs will be written to: %s", output_dir)
 
     history = []
@@ -329,6 +324,7 @@ def train_from_config(config_path: Path) -> Dict[str, Any]:
     summary = {
         "best_val_loss": best_val_loss,
         "epochs": epochs,
+        "device": str(device),
         "output_dir": str(output_dir),
         "checkpoint": str(checkpoint_path),
         "history": str(history_path),
