@@ -110,6 +110,55 @@ pip install -e ".[multimodal]"
 python scripts/train_multimodal.py --config configs/multimodal_her2_demo.yaml
 ```
 
+### Train from pre-encoded features (cfDNA PT + WSI PT)
+```bash
+python scripts/train_feature_contrastive.py --config configs/multimodal_feature_her2_demo.yaml
+```
+
+### cfDNA visualisation suite
+Generate cfDNA-side plots from precomputed features and optional analysis tables:
+- feature-space scatter (PCA 2D) + linear hyperplane attempt (binary labels)
+- fragment-length distribution + short-fragment ratio plot
+- methylation-proxy heatmap
+- CNV heatmap
+
+```bash
+python scripts/run_cfdna_plot_suite.py \
+  --output_dir GSE243474/visualisation/cfdna \
+  --cfdna_features_pt GSE243474/features/ntv2/breast/mask_from_raw/cfdna_features__encoder-ntv2__mode-mask_from_raw.pt \
+  --labels_table GSE243474/path/to/her2_labels.csv \
+  --labels_sample_col sample_id \
+  --labels_label_col her2_status \
+  --frag_dir runs/example_run/features/frag \
+  --meth_summary_path runs/example_run/features/meth_proxy/meth_proxy_summary.parquet \
+  --cnv_dir runs/example_run/features/cnv
+```
+
+Legacy alias still works:
+```bash
+python scripts/visualize_cfdna.py ...
+```
+
+All paths are resolved under the configured data root.
+
+Default output is grouped by analysis type under `GSE243474/visualisation/cfdna/`:
+- `feature_space/`:
+  - `cfdna_feature_space__pca2d__linear_hyperplane.png`
+  - `cfdna_feature_space__projected_points.csv`
+- `fragmentomics/`:
+  - `cfdna_fragmentomics__length_distribution_by_label.png`
+  - `cfdna_fragmentomics__length_density_by_label.csv`
+  - `cfdna_fragmentomics__short_fragment_ratio_table.csv`
+  - `cfdna_fragmentomics__short_fragment_ratio_boxplot.png`
+- `methylation_proxy/`:
+  - `cfdna_methylation_proxy__heatmap.png`
+  - `cfdna_methylation_proxy__matrix.csv`
+- `cnv/`:
+  - `cfdna_cnv__heatmap.png`
+  - `cfdna_cnv__matrix.csv`
+- root summary:
+  - `cfdna_visualisation_summary.json`
+
 ### Quick encoder smoke test (1-2 cfDNA BED samples)
 ```bash
 python scripts/encode_bed_to_embedding.py --quick_smoke_test
@@ -125,11 +174,68 @@ Optional flags:
 - `--quick_max_files 1` (use only one BED sample)
 - `--quick_allow_model_download` (allow weight download if local weights are missing)
 
+cfDNA feature package naming (sample_id -> embedding tensor):
+- `cfdna_features__encoder-<encoder_name>__mode-<peak_mode>.pt`
+- Stored under `GSE243474/features/<encoder>/<cohort>/<mode>/`
+
+### Multi-signal blood feature encoding (cfChIP / cfMeDIP / LPWGS / VCF)
+Unified entrypoint:
+```bash
+python scripts/encode_blood_signal_features.py \
+  --signal cfchip_seq \
+  --input_format bed.gz \
+  --input_dir GSE243474/breast \
+  --fasta_path genome/hg38.fa \
+  --encoder ntv2 \
+  --peak_mode mask_from_raw
+```
+
+LPWGS encoding (correctness-first default: CNV profile encoder):
+```bash
+python scripts/encode_blood_signal_features.py \
+  --signal lpwgs \
+  --input_format bed.gz \
+  --input_dir GSE243474/breast \
+  --encoder lpwgs_cnv_profile \
+  --bin_size 1000000 \
+  --target_bins 256
+```
+
+LPWGS foundation-model encoding (optional exploratory path):
+```bash
+python scripts/encode_blood_signal_features.py \
+  --signal lpwgs \
+  --input_format bed.gz \
+  --input_dir GSE243474/breast \
+  --fasta_path genome/hg38.fa \
+  --encoder ntv2
+```
+
+VCF signature encoding:
+```bash
+python scripts/encode_blood_signal_features.py \
+  --signal ctdna_variant \
+  --input_format vcf \
+  --input_dir GSE243474/variants \
+  --encoder vcf_signature
+```
+
+Packed feature naming:
+- `blood_features__signal-<signal>__encoder-<encoder>__mode-<mode>.pt`
+
+Encoder applicability rules are documented in:
+- `src/liquidbiopsy_agent/multimodal/blood_signal_encoding.py`
+
 ### WSI pathology encoder (TRIDENT + UNI-V2 + TANGLE)
 WSI pipeline entrypoint:
 ```bash
 python scripts/encode_wsi_to_slide_embedding.py
 ```
+
+Role split in this project:
+- TRIDENT: pathology WSI preprocessing (segmentation + tiling + coord management).
+- UNI-V2: tile-level encoding (all tile features and representative tile features are UNI-based).
+- TANGLE: slide-level encoding only (aggregates patch features into one slide embedding).
 
 Default data paths (resolved under data root):
 - slides: `TCGA-BRCA/slides`
@@ -153,9 +259,24 @@ Why `third_party` is kept under data root:
 
 Intermediate files and whether they are needed:
 - TRIDENT stage writes segmentation/coords/patch features (e.g. `contours*`, `*_overlap/patches`, `features_uni_v2`).
-- TANGLE stage writes slide embeddings (`slide_embeddings.{parquet,csv,pkl}`).
+- Optional representative-tile stage writes selected tile sets (`tile_features/selected_tiles/*.npz`).
+- Slide-level package: `slide_features/wsi_slide_features__encoder-<encoder>__mode-<mode>.pt`
+- Tile-level package: `tile_features/wsi_tile_features__selector-<tile_selector>__encoder-<tile_encoder>.pt`
+- TANGLE stage also keeps tabular exports (`slide_embeddings.{parquet,csv,pkl}`) for inspection.
 - These files are used for resume/debug/reuse (e.g. rerun TANGLE without recomputing TRIDENT).
 - They can be deleted, but deleted stages must be recomputed in future runs.
+
+Run representative tile selection (SPLICE-style, no tile merge):
+```bash
+python scripts/encode_wsi_to_slide_embedding.py \
+  --run_tile_selection \
+  --tile_selection_method splice \
+  --tile_selection_top_k 32
+```
+
+Supported tile selectors:
+- `splice` (default): SPLICE-style representativeness + non-redundancy selection.
+- `fps`: diversity-first farthest-point sampling.
 
 Non-CUDA safety guard:
 - On non-CUDA devices (Apple MPS/CPU), artifact-removal substage is auto-disabled to avoid TRIDENT CUDA-path crashes.

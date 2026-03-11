@@ -1,0 +1,44 @@
+data:
+  # 'slide': use slide-level WSI features
+  # 'tile':  use representative tile-level WSI features
+  feature_mode: slide
+
+  # cfDNA feature package (sample_id -> embedding tensor)
+  blood_features_pt: GSE243474/features/ntv2/breast/mask_from_raw/cfdna_features__encoder-ntv2__mode-mask_from_raw.pt
+
+  # WSI feature package:
+  # For slide mode, this should be slide_id -> embedding tensor
+  tissue_slide_features_pt: TCGA-BRCA/wsi_embeddings/slide_features/wsi_slide_features__encoder-tangle__mode-slide_level.pt
+  # For tile mode, this should be slide_id -> [(tile_embedding, ((x1,y1),(x2,y2))), ...]
+  tissue_tile_features_pt: TCGA-BRCA/wsi_embeddings/tile_features/wsi_tile_features__selector-splice__encoder-uni_v2.pt
+
+  # Cross-modal relation table.
+  # TODO(superhy): replace with real cohort mapping + Her2 labels after mounting data disk.
+  labels_table: GSE243474/path/to/her2_cross_modal_labels.csv
+  labels_columns:
+    blood_sample_id: blood_sample_id
+    slide_id: slide_id
+    her2_label: her2_status
+    patient_id: patient_id
+    split: split
+  val_ratio: 0.2
+
+model:
+  projection_dim: 128
+  projection_hidden_dim: 256
+  dropout: 0.1
+  blood_hidden_dims: [256]
+  tissue_hidden_dims: [256]
+  tile_hidden_dims: [256]
+
+train:
+  seed: 42
+  device: auto
+  batch_size: 32
+  num_workers: 0
+  epochs: 20
+  lr: 0.001
+  weight_decay: 0.0001
+  grad_clip_norm: 1.0
+  temperature: 0.07
+  output_dir: experiments/multimodal_feature/her2_demo

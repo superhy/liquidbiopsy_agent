@@ -4,12 +4,14 @@ import importlib
 import json
 import os
 import pickle
+import re
 import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
+import h5py
 import numpy as np
 import pandas as pd
 import torch
@@ -454,6 +456,400 @@ def _adapt_feature_dim(features: torch.Tensor, expected_dim: int, policy: str) -
     )
 
 
+def _discover_patch_feature_files(patch_features_dir: Path, extension: str) -> list[Path]:
+    return sorted(
+        p
+        for p in patch_features_dir.rglob(f"*{extension}")
+        if p.is_file() and not p.name.startswith("._")
+    )
+
+
+def _iter_h5_datasets(group: h5py.Group, prefix: str = ""):
+    for key, value in group.items():
+        dataset_key = f"{prefix}{key}"
+        if isinstance(value, h5py.Dataset):
+            yield dataset_key, value
+        elif isinstance(value, h5py.Group):
+            yield from _iter_h5_datasets(value, prefix=f"{dataset_key}/")
+
+
+def _find_h5_dataset_key(
+    h5_file: h5py.File,
+    *,
+    preferred_names: Sequence[str],
+    min_ndim: int = 1,
+    min_last_dim: int | None = None,
+    fallback_any: bool = True,
+) -> str | None:
+    datasets = list(_iter_h5_datasets(h5_file))
+    if not datasets:
+        return None
+
+    lowered_names = tuple(name.lower() for name in preferred_names)
+    for preferred in lowered_names:
+        for key, dataset in datasets:
+            key_l = key.lower()
+            leaf_l = key_l.split("/")[-1]
+            if key_l == preferred or leaf_l == preferred:
+                if dataset.ndim < min_ndim:
+                    continue
+                if min_last_dim is not None and int(dataset.shape[-1]) < min_last_dim:
+                    continue
+                return key
+
+    if fallback_any:
+        for key, dataset in datasets:
+            if dataset.ndim < min_ndim:
+                continue
+            if min_last_dim is not None and int(dataset.shape[-1]) < min_last_dim:
+                continue
+            return key
+
+    return None
+
+
+def _load_patch_feature_file(feature_file: Path) -> tuple[np.ndarray, np.ndarray | None, str, str | None]:
+    with h5py.File(feature_file, "r") as h5_file:
+        features_key = _find_h5_dataset_key(
+            h5_file,
+            preferred_names=("features", "feats", "embeddings", "patch_features"),
+            min_ndim=2,
+            min_last_dim=8,
+        )
+        if features_key is None:
+            raise ValueError(f"No valid 2D feature dataset found in {feature_file}")
+        features = np.asarray(h5_file[features_key], dtype=np.float32)
+
+        coords_key = _find_h5_dataset_key(
+            h5_file,
+            preferred_names=("coords", "coordinates", "xy", "patch_coords"),
+            min_ndim=2,
+            min_last_dim=2,
+            fallback_any=False,
+        )
+        coords: np.ndarray | None = None
+        if coords_key is not None and coords_key != features_key:
+            coords_arr = np.asarray(h5_file[coords_key])
+            if coords_arr.ndim == 2 and int(coords_arr.shape[0]) == int(features.shape[0]):
+                coords = coords_arr
+
+    return features, coords, features_key, coords_key
+
+
+def _safe_l2_normalize(features: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    norms = np.linalg.norm(features, axis=1, keepdims=True)
+    norms = np.maximum(norms, eps)
+    return features / norms
+
+
+def _build_candidate_pool(
+    n_tiles: int,
+    *,
+    max_input_tiles: int | None,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    all_indices = np.arange(n_tiles, dtype=np.int64)
+    if max_input_tiles is None or n_tiles <= max_input_tiles:
+        return all_indices
+    sampled = rng.choice(all_indices, size=max_input_tiles, replace=False)
+    sampled.sort()
+    return sampled.astype(np.int64)
+
+
+def _select_tiles_random(
+    features: np.ndarray,
+    *,
+    top_k: int,
+    rng: np.random.Generator,
+    splice_alpha: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    _ = splice_alpha
+    n_tiles = int(features.shape[0])
+    k = min(int(top_k), n_tiles)
+    selected = np.sort(rng.choice(n_tiles, size=k, replace=False).astype(np.int64))
+    scores = np.ones(k, dtype=np.float32)
+    return selected, scores
+
+
+def _select_tiles_fps(
+    features: np.ndarray,
+    *,
+    top_k: int,
+    rng: np.random.Generator,
+    splice_alpha: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    _ = splice_alpha
+    norm_features = _safe_l2_normalize(features.astype(np.float32, copy=False))
+    n_tiles = int(norm_features.shape[0])
+    k = min(int(top_k), n_tiles)
+
+    first_idx = int(rng.integers(0, n_tiles))
+    selected = [first_idx]
+    selected_scores = [1.0]
+    picked = np.zeros(n_tiles, dtype=bool)
+    picked[first_idx] = True
+
+    min_cosine_dist = 1.0 - np.clip(norm_features @ norm_features[first_idx], -1.0, 1.0)
+    min_cosine_dist[first_idx] = -np.inf
+
+    while len(selected) < k:
+        next_idx = int(np.argmax(min_cosine_dist))
+        if picked[next_idx]:
+            break
+        selected.append(next_idx)
+        selected_scores.append(float(min_cosine_dist[next_idx]))
+        picked[next_idx] = True
+        next_dist = 1.0 - np.clip(norm_features @ norm_features[next_idx], -1.0, 1.0)
+        min_cosine_dist = np.minimum(min_cosine_dist, next_dist)
+        min_cosine_dist[picked] = -np.inf
+
+    return np.asarray(selected, dtype=np.int64), np.asarray(selected_scores, dtype=np.float32)
+
+
+def _select_tiles_splice(
+    features: np.ndarray,
+    *,
+    top_k: int,
+    rng: np.random.Generator,
+    splice_alpha: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    _ = rng
+    alpha = float(np.clip(splice_alpha, 0.0, 1.0))
+    norm_features = _safe_l2_normalize(features.astype(np.float32, copy=False))
+    n_tiles = int(norm_features.shape[0])
+    k = min(int(top_k), n_tiles)
+
+    centroid = norm_features.mean(axis=0, keepdims=True)
+    centroid = _safe_l2_normalize(centroid)[0]
+    representativeness = np.clip(norm_features @ centroid, -1.0, 1.0)
+
+    first_idx = int(np.argmax(representativeness))
+    selected = [first_idx]
+    selected_scores = [float(representativeness[first_idx])]
+    picked = np.zeros(n_tiles, dtype=bool)
+    picked[first_idx] = True
+
+    novelty = 1.0 - np.clip(norm_features @ norm_features[first_idx], -1.0, 1.0)
+    novelty[first_idx] = 0.0
+
+    while len(selected) < k:
+        combined = alpha * representativeness + (1.0 - alpha) * novelty
+        combined[picked] = -np.inf
+        next_idx = int(np.argmax(combined))
+        if picked[next_idx]:
+            break
+
+        selected.append(next_idx)
+        selected_scores.append(float(combined[next_idx]))
+        picked[next_idx] = True
+
+        next_dist = 1.0 - np.clip(norm_features @ norm_features[next_idx], -1.0, 1.0)
+        novelty = np.minimum(novelty, next_dist)
+
+    return np.asarray(selected, dtype=np.int64), np.asarray(selected_scores, dtype=np.float32)
+
+
+TileSelectorFn = Callable[
+    [np.ndarray, int, np.random.Generator, float],
+    tuple[np.ndarray, np.ndarray],
+]
+
+_TILE_SELECTOR_REGISTRY: dict[str, TileSelectorFn] = {
+    "splice": lambda feats, top_k, rng, alpha: _select_tiles_splice(
+        feats, top_k=top_k, rng=rng, splice_alpha=alpha
+    ),
+    "fps": lambda feats, top_k, rng, alpha: _select_tiles_fps(
+        feats, top_k=top_k, rng=rng, splice_alpha=alpha
+    ),
+    "random": lambda feats, top_k, rng, alpha: _select_tiles_random(
+        feats, top_k=top_k, rng=rng, splice_alpha=alpha
+    ),
+}
+
+
+def list_supported_tile_selection_methods() -> tuple[str, ...]:
+    return tuple(sorted(_TILE_SELECTOR_REGISTRY.keys()))
+
+
+def _build_slide_output_name(feature_file: Path, patch_features_root: Path, extension: str) -> tuple[str, str]:
+    relative = feature_file.relative_to(patch_features_root)
+    rel_str = relative.as_posix()
+    if rel_str.endswith(extension):
+        rel_trim = rel_str[: -len(extension)]
+    else:
+        rel_trim = relative.stem
+    slide_id = Path(rel_trim).name
+    output_name = rel_trim.replace("/", "__")
+    return slide_id, output_name
+
+
+def run_representative_tile_selection(
+    *,
+    patch_features_dir: str | Path,
+    output_dir: str | Path,
+    method: str = "splice",
+    top_k: int = 32,
+    extension: str = ".h5",
+    max_input_tiles: int | None = 4096,
+    splice_alpha: float = 0.7,
+    random_seed: int = 0,
+    tile_encoder_name: str = "uni_v2",
+    tile_patch_size: int = 256,
+) -> dict[str, Any]:
+    patch_features_path = _to_data_path(
+        patch_features_dir,
+        path_kind="patch feature directory for tile selection",
+        must_exist=True,
+    )
+    if not patch_features_path.is_dir():
+        raise NotADirectoryError(f"Patch feature directory is not a folder: {patch_features_path}")
+
+    out_dir = _to_data_path(output_dir, path_kind="tile selection output directory", must_exist=False)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    method_l = str(method).strip().lower()
+    if method_l not in _TILE_SELECTOR_REGISTRY:
+        raise ValueError(
+            f"Unsupported tile selection method '{method}'. "
+            f"Choose from: {', '.join(list_supported_tile_selection_methods())}"
+        )
+    if int(top_k) <= 0:
+        raise ValueError(f"top_k must be positive, got {top_k}")
+    if max_input_tiles is not None and int(max_input_tiles) <= 0:
+        raise ValueError(f"max_input_tiles must be positive when set, got {max_input_tiles}")
+
+    selector = _TILE_SELECTOR_REGISTRY[method_l]
+    feature_files = _discover_patch_feature_files(patch_features_path, extension=extension)
+    if not feature_files:
+        raise ValueError(
+            f"No patch feature files with extension '{extension}' found in: {patch_features_path}"
+        )
+
+    selected_dir = out_dir / "selected_tiles"
+    selected_dir.mkdir(parents=True, exist_ok=True)
+    packed_tile_features: dict[str, list[tuple[torch.Tensor, tuple[tuple[int, int], tuple[int, int]]]]] = {}
+
+    records: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+
+    # TODO(superhy): once data disk is mounted, run end-to-end checks on real TRIDENT+UNI H5s
+    # and manually verify selected tiles are tissue-informative and non-redundant.
+    for file_idx, feature_file in enumerate(feature_files):
+        slide_id, output_name = _build_slide_output_name(feature_file, patch_features_path, extension)
+        try:
+            features, coords, features_key, coords_key = _load_patch_feature_file(feature_file)
+            if features.ndim != 2:
+                raise ValueError(f"Feature array must be 2D, got shape={features.shape}")
+            n_tiles = int(features.shape[0])
+            if n_tiles == 0:
+                raise ValueError("Feature array is empty")
+
+            rng = np.random.default_rng(int(random_seed) + file_idx)
+            candidate_indices = _build_candidate_pool(
+                n_tiles,
+                max_input_tiles=max_input_tiles,
+                rng=rng,
+            )
+            candidate_features = features[candidate_indices]
+            local_selected, selected_scores = selector(
+                candidate_features,
+                int(top_k),
+                rng,
+                float(splice_alpha),
+            )
+            selected_indices = candidate_indices[local_selected]
+            selected_features = features[selected_indices].astype(np.float32, copy=False)
+
+            payload: dict[str, Any] = {
+                "slide_id": slide_id,
+                "source_file": str(feature_file),
+                "method": method_l,
+                "selected_indices": selected_indices.astype(np.int64, copy=False),
+                "selection_scores": selected_scores.astype(np.float32, copy=False),
+                "selected_features": selected_features,
+            }
+            if coords is not None:
+                payload["selected_coords"] = coords[selected_indices]
+            packed_entries: list[tuple[torch.Tensor, tuple[tuple[int, int], tuple[int, int]]]] = []
+            for row_i, emb_vec in enumerate(selected_features):
+                emb_tensor = torch.from_numpy(np.asarray(emb_vec, dtype=np.float32))
+                if coords is not None:
+                    raw_coord = coords[selected_indices[row_i]]
+                    raw_coord = np.asarray(raw_coord).reshape(-1)
+                    if raw_coord.shape[0] >= 4:
+                        x1, y1, x2, y2 = [int(v) for v in raw_coord[:4].tolist()]
+                    elif raw_coord.shape[0] >= 2:
+                        x1, y1 = [int(v) for v in raw_coord[:2].tolist()]
+                        x2 = int(x1 + int(tile_patch_size))
+                        y2 = int(y1 + int(tile_patch_size))
+                    else:
+                        x1 = y1 = x2 = y2 = 0
+                else:
+                    x1 = y1 = x2 = y2 = 0
+                packed_entries.append((emb_tensor, ((x1, y1), (x2, y2))))
+            packed_tile_features[slide_id] = packed_entries
+
+            npz_path = selected_dir / f"{output_name}.npz"
+            np.savez_compressed(npz_path, **payload)
+
+            records.append(
+                {
+                    "slide_id": slide_id,
+                    "source_file": str(feature_file),
+                    "features_key": features_key,
+                    "coords_key": coords_key,
+                    "n_tiles_total": n_tiles,
+                    "n_tiles_candidate_pool": int(candidate_indices.shape[0]),
+                    "n_tiles_selected": int(selected_indices.shape[0]),
+                    "output_npz": str(npz_path),
+                }
+            )
+        except Exception as exc:
+            failed.append({"source_file": str(feature_file), "error": str(exc)})
+
+    if not records:
+        raise RuntimeError(
+            "Representative tile selection failed for all slides. "
+            f"First error: {failed[0]['error'] if failed else 'unknown'}"
+        )
+
+    records_df = pd.DataFrame(records)
+    csv_path = out_dir / "selected_tiles_index.csv"
+    parquet_path = out_dir / "selected_tiles_index.parquet"
+    safe_selector = re.sub(r"[^A-Za-z0-9_.-]+", "-", method_l)
+    safe_encoder = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(tile_encoder_name).strip().lower())
+    packed_pt_path = out_dir / f"wsi_tile_features__selector-{safe_selector}__encoder-{safe_encoder}.pt"
+    summary_path = out_dir / "summary.json"
+
+    records_df.to_csv(csv_path, index=False)
+    records_df.to_parquet(parquet_path, index=False)
+    torch.save(packed_tile_features, packed_pt_path)
+
+    summary = {
+        "patch_features_dir": str(patch_features_path),
+        "method": method_l,
+        "tile_encoder_name": str(tile_encoder_name),
+        "top_k": int(top_k),
+        "extension": extension,
+        "max_input_tiles": int(max_input_tiles) if max_input_tiles is not None else None,
+        "splice_alpha": float(splice_alpha),
+        "random_seed": int(random_seed),
+        "tile_patch_size": int(tile_patch_size),
+        "n_feature_files": len(feature_files),
+        "n_slides_succeeded": len(records),
+        "n_slides_failed": len(failed),
+        "failed_examples": failed[:10],
+        "selected_tiles_dir": str(selected_dir),
+        "tile_features_pt": str(packed_pt_path),
+        "index_csv": str(csv_path),
+        "index_parquet": str(parquet_path),
+    }
+    with summary_path.open("w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    return summary
+
+
 def run_tangle_slide_embedding(
     *,
     patch_features_dir: str | Path,
@@ -470,6 +866,8 @@ def run_tangle_slide_embedding(
     batch_size: int = 1,
     num_workers: int = 0,
     feature_dim_policy: str = "truncate_or_pad",
+    slide_encoder_name: str = "tangle",
+    slide_mode_name: str = "slide_level",
 ) -> dict[str, Any]:
     if batch_size != 1:
         raise ValueError("TANGLE inference currently requires batch_size=1 due variable token counts per slide.")
@@ -587,6 +985,9 @@ def run_tangle_slide_embedding(
     parquet_path = out_dir / "slide_embeddings.parquet"
     csv_path = out_dir / "slide_embeddings.csv"
     pkl_path = out_dir / "slide_embeddings.pkl"
+    safe_encoder = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(slide_encoder_name).strip().lower())
+    safe_mode = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(slide_mode_name).strip().lower())
+    slide_features_pt = out_dir / f"wsi_slide_features__encoder-{safe_encoder}__mode-{safe_mode}.pt"
     summary_path = out_dir / "summary.json"
 
     emb_df.to_parquet(parquet_path, index=False)
@@ -594,6 +995,11 @@ def run_tangle_slide_embedding(
 
     with pkl_path.open("wb") as f:
         pickle.dump({"slide_ids": slide_ids, "embeds": embeds_np}, f)
+    slide_feature_payload = {
+        str(slide_id): torch.from_numpy(np.asarray(embeds_np[idx], dtype=np.float32))
+        for idx, slide_id in enumerate(slide_ids)
+    }
+    torch.save(slide_feature_payload, slide_features_pt)
 
     summary = {
         "device": resolved_device_str,
@@ -602,6 +1008,8 @@ def run_tangle_slide_embedding(
         "tangle_checkpoint_dir": str(checkpoint_dir),
         "n_slides": len(slide_ids),
         "embedding_dim": emb_dim,
+        "slide_encoder_name": str(slide_encoder_name),
+        "slide_mode_name": str(slide_mode_name),
         "patch_feature_dim_observed": observed_dim,
         "patch_feature_dim_expected": int(expected_dim) if isinstance(expected_dim, int) else None,
         "feature_dim_policy": policy,
@@ -609,6 +1017,7 @@ def run_tangle_slide_embedding(
         "parquet": str(parquet_path),
         "csv": str(csv_path),
         "pkl": str(pkl_path),
+        "slide_features_pt": str(slide_features_pt),
     }
     with summary_path.open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
@@ -633,6 +1042,7 @@ def encode_tcga_brca_wsi(
     tangle_checkpoint_keyword: str = "tangle_brca",
     run_trident: bool = True,
     run_tangle: bool = True,
+    run_tile_selection: bool = False,
     patch_features_dir: str | Path | None = None,
     reader_type: str = "openslide",
     segmenter: str = "hest",
@@ -653,6 +1063,15 @@ def encode_tcga_brca_wsi(
     extension: str = ".h5",
     tangle_num_workers: int = 0,
     feature_dim_policy: str = "truncate_or_pad",
+    tile_selection_method: str = "splice",
+    tile_selection_top_k: int = 32,
+    tile_selection_output_dir: str | Path | None = None,
+    tile_selection_max_input_tiles: int | None = 4096,
+    tile_selection_splice_alpha: float = 0.7,
+    tile_selection_seed: int = 0,
+    tile_encoder_name: str = "uni_v2",
+    slide_encoder_name: str = "tangle",
+    slide_mode_name: str = "slide_level",
 ) -> dict[str, Any]:
     out_root = _to_data_path(output_root, path_kind="WSI output root", must_exist=False)
     out_root.mkdir(parents=True, exist_ok=True)
@@ -698,10 +1117,34 @@ def encode_tcga_brca_wsi(
             _to_data_path(patch_features_dir, path_kind="patch feature directory", must_exist=True)
         )
 
+    if run_tile_selection:
+        tile_selection_out_dir = (
+            out_root / "tile_features"
+            if tile_selection_output_dir is None
+            else _to_data_path(
+                tile_selection_output_dir,
+                path_kind="tile selection output directory",
+                must_exist=False,
+            )
+        )
+        tile_selection_result = run_representative_tile_selection(
+            patch_features_dir=effective_patch_features_dir,
+            output_dir=tile_selection_out_dir,
+            method=tile_selection_method,
+            top_k=tile_selection_top_k,
+            extension=extension,
+            max_input_tiles=tile_selection_max_input_tiles,
+            splice_alpha=tile_selection_splice_alpha,
+            random_seed=tile_selection_seed,
+            tile_encoder_name=tile_encoder_name,
+            tile_patch_size=patch_size,
+        )
+        summary["tile_selection"] = tile_selection_result
+
     if run_tangle:
         tangle_result = run_tangle_slide_embedding(
             patch_features_dir=effective_patch_features_dir,
-            output_dir=out_root / "tangle_slide_embeddings",
+            output_dir=out_root / "slide_features",
             device=device,
             models_root=models_root,
             tangle_repo_dir=tangle_repo_dir,
@@ -714,6 +1157,8 @@ def encode_tcga_brca_wsi(
             batch_size=1,
             num_workers=tangle_num_workers,
             feature_dim_policy=feature_dim_policy,
+            slide_encoder_name=slide_encoder_name,
+            slide_mode_name=slide_mode_name,
         )
         summary["tangle"] = tangle_result
 

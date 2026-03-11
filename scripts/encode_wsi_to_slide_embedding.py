@@ -14,7 +14,13 @@ if str(SRC_DIR) not in sys.path:
 from liquidbiopsy_agent.multimodal.wsi_encoding import (
     TANGLE_PRETRAINED_DRIVE_URL,
     encode_tcga_brca_wsi,
+    list_supported_tile_selection_methods,
 )
+
+
+def _list_public_tile_selection_methods() -> tuple[str, ...]:
+    # Keep random baseline internal; CLI exposes only curated selectors.
+    return tuple(m for m in list_supported_tile_selection_methods() if m != "random")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -86,6 +92,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip_trident", action="store_true", help="Skip TRIDENT preprocessing + UNI-V2 feature extraction.")
     parser.add_argument("--skip_tangle", action="store_true", help="Skip TANGLE slide embedding stage.")
     parser.add_argument(
+        "--run_tile_selection",
+        action="store_true",
+        help="Run representative tile selection on UNI patch features.",
+    )
+    parser.add_argument(
         "--patch_features_dir",
         default=None,
         type=str,
@@ -125,6 +136,42 @@ def _build_parser() -> argparse.ArgumentParser:
             "(UNI-V2 is often 1536 while BRCA TANGLE checkpoints are 1024)."
         ),
     )
+    parser.add_argument(
+        "--tile_selection_method",
+        default="splice",
+        choices=_list_public_tile_selection_methods(),
+        help="Representative tile selection method.",
+    )
+    parser.add_argument(
+        "--tile_selection_top_k",
+        default=32,
+        type=int,
+        help="Number of representative tiles to keep per slide.",
+    )
+    parser.add_argument(
+        "--tile_selection_output_dir",
+        default=None,
+        type=str,
+        help="Optional output directory for representative tile selection artifacts.",
+    )
+    parser.add_argument(
+        "--tile_selection_max_input_tiles",
+        default=4096,
+        type=int,
+        help="Maximum candidate tiles per slide before selection (randomly subsampled if exceeded).",
+    )
+    parser.add_argument(
+        "--tile_selection_splice_alpha",
+        default=0.7,
+        type=float,
+        help="SPLICE-style balance: 1.0=representativeness only, 0.0=novelty only.",
+    )
+    parser.add_argument(
+        "--tile_selection_seed",
+        default=0,
+        type=int,
+        help="Random seed for candidate subsampling and stochastic selectors.",
+    )
 
     parser.add_argument(
         "--quick_smoke_test",
@@ -163,6 +210,7 @@ def main() -> None:
         tangle_checkpoint_keyword=args.tangle_checkpoint_keyword,
         run_trident=not args.skip_trident,
         run_tangle=not args.skip_tangle,
+        run_tile_selection=args.run_tile_selection,
         patch_features_dir=args.patch_features_dir,
         reader_type=args.reader_type,
         segmenter=args.segmenter,
@@ -183,6 +231,12 @@ def main() -> None:
         extension=args.extension,
         tangle_num_workers=args.tangle_num_workers,
         feature_dim_policy=args.feature_dim_policy,
+        tile_selection_method=args.tile_selection_method,
+        tile_selection_top_k=args.tile_selection_top_k,
+        tile_selection_output_dir=args.tile_selection_output_dir,
+        tile_selection_max_input_tiles=args.tile_selection_max_input_tiles,
+        tile_selection_splice_alpha=args.tile_selection_splice_alpha,
+        tile_selection_seed=args.tile_selection_seed,
     )
 
     print(json.dumps(summary, indent=2, ensure_ascii=False))

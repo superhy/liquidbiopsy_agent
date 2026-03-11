@@ -391,6 +391,7 @@ def encode_bed_folder_to_embeddings(
     emb_by_sample_csv = output_path / "embeddings_by_sample.csv"
     safe_model = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(encoder.model_key))
     safe_mode = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(peak_mode_norm))
+    cfdna_pack_pt = output_path / f"cfdna_features__encoder-{safe_model}__mode-{safe_mode}.pt"
     emb_by_sample_pt = output_path / f"embeddings_by_sample__model-{safe_model}__mode-{safe_mode}.pt"
     emb_by_sample_pt_legacy = output_path / "embeddings_by_sample.pt"
     sample_index_json = output_path / "sample_id_to_row.json"
@@ -425,6 +426,7 @@ def encode_bed_folder_to_embeddings(
         sample_ids = emb_by_sample_df["sample_id"].astype(str).tolist()
         # Fast random query payload: sample_id -> sample_feature tensor.
         pt_payload = {sid: emb_tensor[idx] for idx, sid in enumerate(sample_ids)}
+        torch.save(pt_payload, cfdna_pack_pt)
         torch.save(pt_payload, emb_by_sample_pt)
         # Backward-compatible alias for previous default filename.
         torch.save(pt_payload, emb_by_sample_pt_legacy)
@@ -453,6 +455,7 @@ def encode_bed_folder_to_embeddings(
         "embeddings_csv": str(emb_csv),
         "embeddings_by_sample_parquet": str(emb_by_sample_parquet) if by_sample_parquet_ok else None,
         "embeddings_by_sample_csv": str(emb_by_sample_csv),
+        "cfdna_features_pt": str(cfdna_pack_pt) if pt_ok else None,
         "embeddings_by_sample_pt": str(emb_by_sample_pt) if pt_ok else None,
         "embeddings_by_sample_pt_legacy": str(emb_by_sample_pt_legacy) if pt_ok else None,
         "sample_id_to_row_json": str(sample_index_json),
@@ -484,6 +487,8 @@ def encode_bed_folder_to_embeddings(
         if summary["embeddings_by_sample_parquet"]:
             print(f"[DONE] embeddings_by_sample_parquet: {summary['embeddings_by_sample_parquet']}")
         print(f"[DONE] embeddings_by_sample_csv: {summary['embeddings_by_sample_csv']}")
+        if summary["cfdna_features_pt"]:
+            print(f"[DONE] cfdna_features_pt: {summary['cfdna_features_pt']}")
         if summary["embeddings_by_sample_pt"]:
             print(f"[DONE] embeddings_by_sample_pt: {summary['embeddings_by_sample_pt']}")
             print(f"[DONE] embeddings_by_sample_pt_legacy: {summary['embeddings_by_sample_pt_legacy']}")
