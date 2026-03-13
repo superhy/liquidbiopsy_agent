@@ -14,6 +14,17 @@ from liquidbiopsy_agent.utils.plotting import save_lineplot, save_cnv_chrom_plot
 def bin_counts(path: Path, bin_size: int) -> pd.DataFrame:
     records = []
     for chunk in pd.read_csv(path, sep="\t", header=None, names=["chrom", "start", "end"], chunksize=200_000):
+        # Robust BED parsing: tolerate track/header rows and malformed coordinates.
+        chunk["start"] = pd.to_numeric(chunk["start"], errors="coerce")
+        chunk["end"] = pd.to_numeric(chunk["end"], errors="coerce")
+        chunk = chunk.dropna(subset=["chrom", "start", "end"])
+        if chunk.empty:
+            continue
+        chunk["start"] = chunk["start"].astype(np.int64)
+        chunk["end"] = chunk["end"].astype(np.int64)
+        chunk = chunk[chunk["end"] > chunk["start"]]
+        if chunk.empty:
+            continue
         mid = (chunk["start"] + chunk["end"]) // 2
         bins = mid // bin_size
         records.append(pd.DataFrame({"bin": bins, "chrom": chunk["chrom"]}))
